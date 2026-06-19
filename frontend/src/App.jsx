@@ -8,6 +8,9 @@ import DoctorLoginPage from './pages/DoctorLoginPage';
 import PatientDashboard from './pages/PatientDashboard';
 import DoctorDashboard from './pages/DoctorDashboard';
 import AdminDashboard from './pages/AdminDashboard';
+import TicketDetailPage from './pages/TicketDetailPage';
+import ChatPage from './pages/ChatPage';
+import ChatbotPage from './pages/ChatbotPage';
 import HomePage from './pages/HomePage';
 import { useAuth, AuthProvider } from './context/AuthContext';
 
@@ -49,6 +52,9 @@ function App() {
             <Route path="dashboard/doctor" element={<ProtectedRoute allowedRoles={['doctor']}><DoctorDashboard /></ProtectedRoute>} />
             <Route path="dashboard/admin" element={<ProtectedRoute allowedRoles={['admin']}><AdminDashboard /></ProtectedRoute>} />
             
+            <Route path="tickets/:id" element={<ProtectedRoute><TicketDetailPage /></ProtectedRoute>} />
+            <Route path="chat" element={<ProtectedRoute><ChatPage /></ProtectedRoute>} />
+            <Route path="chatbot" element={<ProtectedRoute><ChatbotPage /></ProtectedRoute>} />
             
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>

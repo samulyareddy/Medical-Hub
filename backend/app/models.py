@@ -56,3 +56,24 @@ class Ticket(Document):
 
     class Settings(BaseConfig.Config):
         name = "tickets"
+
+class RefreshToken(Document):
+    token: str
+    user_id: PydanticObjectId = Field(alias="userId")
+    user_role: str = Field(alias="userRole")
+    expires_at: datetime = Field(alias="expiresAt")
+    created_at: datetime = Field(default_factory=datetime.now, alias="createdAt")
+
+    class Settings(BaseConfig.Config):
+        name = "refresh_tokens"
+
+class ChatMessage(Document):
+    ticket_id: PydanticObjectId = Field(alias="ticketId")
+    sender_id: PydanticObjectId = Field(alias="senderId")
+    sender_name: str = Field(alias="senderName")
+    sender_role: str = Field(alias="senderRole")
+    text: str
+    created_at: datetime = Field(default_factory=datetime.now, alias="createdAt")
+
+    class Settings(BaseConfig.Config):
+        name = "chat_messages"
