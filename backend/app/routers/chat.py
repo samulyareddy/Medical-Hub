@@ -23,4 +23,4 @@ async def get_token_stub(user = Depends(require_user)):
         "user_id": str(user.id),
         "user_name": user.email
     }
-  
+    

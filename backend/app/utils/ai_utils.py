@@ -1,4 +1,9 @@
 import os
+import io
+import pymupdf
+import asyncio
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from app.models import MedicalDocumentParent, MedicalDocumentChunk
 from typing import List, Dict, Optional
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
@@ -6,12 +11,24 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, Field
+from pinecone import Pinecone
 
 load_dotenv()
 
 
 gemini_api_key = os.getenv("GEMINI_API_KEY")
 groq_api_key = os.getenv("GROQ_API_KEY")
+pinecone_api_key = os.getenv("PINECONE_API_KEY")
+pinecone_index_name = os.getenv("PINECONE_INDEX_NAME")
+
+pc = None
+pinecone_index = None
+if pinecone_api_key and pinecone_index_name:
+    try:
+        pc = Pinecone(api_key=pinecone_api_key)
+        pinecone_index = pc.Index(pinecone_index_name)
+    except Exception as e:
+        print(f"Warning: Failed to init Pinecone: {e}")
 
 
 
@@ -25,12 +42,20 @@ if gemini_api_key:
     except Exception as e:
         print(f"Warning: Failed to init Gemini Client: {e}")
 
+from langchain_google_genai import ChatGoogleGenerativeAI
+
 llm = None
 if groq_api_key:
     llm = ChatGroq(
         temperature=0,
-        model_name="llama-3.1-8b-instant",
+        model_name="openai/gpt-oss-20b",
         groq_api_key=groq_api_key
+    )
+elif gemini_api_key:
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-pro",
+        temperature=0,
+        google_api_key=gemini_api_key
     )
 
 
@@ -47,12 +72,16 @@ class ChatAnalysis(BaseModel):
 
 
 
-async def analyze_ticket_ai(title: str, description: str):
+async def analyze_ticket_ai(title: str, description: str, available_specialists: Optional[List[str]] = None):
     if not llm:
         print("AI Analysis Skipped: No LLM initialized.")
         return None
 
     parser = JsonOutputParser(pydantic_object=TicketAnalysis)
+
+    specialists_str = ""
+    if available_specialists:
+        specialists_str = f"Available Specialists (YOU MUST SELECT FROM THESE): {', '.join(available_specialists)}"
 
     prompt = PromptTemplate(
         template="""You are a medical triage agent.
@@ -62,16 +91,18 @@ async def analyze_ticket_ai(title: str, description: str):
         - Title: {title}
         - Description: {description}
         
+        {specialists_str}
+
         {format_instructions}
         """,
-        input_variables=["title", "description"],
+        input_variables=["title", "description", "specialists_str"],
         partial_variables={"format_instructions": parser.get_format_instructions()},
     )
 
     chain = prompt | llm | parser
 
     try:
-        result = await chain.ainvoke({"title": title, "description": description})
+        result = await chain.ainvoke({"title": title, "description": description, "specialists_str": specialists_str})
         return result
     except Exception as e:
         print(f"AI Analysis Failed: {e}")
@@ -199,3 +230,70 @@ async def generate_soap_note(title: str, description: str, chat_history: str) ->
     except Exception as e:
         print(f"SOAP Generation Failed: {e}")
         return None
+
+async def process_medical_pdf(file_bytes: bytes, filename: str):
+    """
+    Parses a PDF, chunks it using a parent-child strategy, generates embeddings for child chunks,
+    and stores them in MongoDB.
+    """
+    
+    doc = pymupdf.open(stream=file_bytes, filetype="pdf")
+    full_text = ""
+    for page in doc:
+        full_text += page.get_text() + "\n"
+        
+    doc.close()
+
+    if not full_text.strip():
+        raise ValueError("No text could be extracted from the PDF.")
+
+    
+    parent_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=2000,
+        chunk_overlap=200,
+        length_function=len,
+        is_separator_regex=False,
+    )
+    parent_texts = parent_splitter.split_text(full_text)
+
+
+    child_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=400,
+        chunk_overlap=50,
+        length_function=len,
+        is_separator_regex=False,
+    )
+
+    for i, p_text in enumerate(parent_texts):
+        parent_doc = MedicalDocumentParent(
+            title=f"{filename} - Part {i+1}",
+            content=p_text
+        )
+        await parent_doc.insert()
+
+        child_texts = child_splitter.split_text(p_text)
+        
+        pinecone_vectors = []
+        for c_text in child_texts:
+            embedding = await generate_embedding(c_text)
+            
+            child_doc = MedicalDocumentChunk(
+                parent_id=parent_doc.id,
+                content=c_text
+            )
+            await child_doc.insert()
+            
+            if pinecone_index:
+                pinecone_vectors.append({
+                    "id": str(child_doc.id),
+                    "values": embedding,
+                    "metadata": {
+                        "parentId": str(parent_doc.id),
+                        "content": c_text
+                    }
+                })
+                
+        if pinecone_index and pinecone_vectors:
+            pinecone_index.upsert(vectors=pinecone_vectors)
+            
+    return {"message": f"Successfully processed {len(parent_texts)} parent chunks and their child chunks."}
